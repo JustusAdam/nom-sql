@@ -14,6 +14,7 @@ pub enum FunctionExpression {
     Max(Column),
     Min(Column),
     GroupConcat(Column, String),
+    UDF(String, Vec<Column>),
 }
 
 impl Display for FunctionExpression {
@@ -31,6 +32,14 @@ impl Display for FunctionExpression {
             FunctionExpression::Min(ref col) => write!(f, "min({})", col),
             FunctionExpression::GroupConcat(ref col, ref s) => {
                 write!(f, "group_concat({}, {})", col, s)
+            },
+            FunctionExpression::UDF(ref name, ref args) => {
+                write!(f, "{}(", name)?;
+                for arg in args.iter() {
+                    arg.fmt(f)?;
+                    write!(f, ",")?;
+                }
+                write!(f, ")")
             }
         }
     }

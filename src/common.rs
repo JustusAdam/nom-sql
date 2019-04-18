@@ -553,6 +553,21 @@ named!(pub column_function<&[u8], FunctionExpression>,
                 FunctionExpression::GroupConcat(col.clone(), sep)
             })
         )
+    |   do_parse!(
+            fun_name: sql_identifier >>
+            args: delimited!(
+                tag!("("),
+                separated_nonempty_list!(
+                    tag!(","),
+                    do_parse!(
+                        opt_multispace >>
+                            id: column_identifier_no_alias >>
+                            opt_multispace >>
+                            (id)
+                    )),
+                tag!(")")) >>
+            (FunctionExpression::UDF(String::from_utf8(fun_name.to_vec()).unwrap(), args))
+        )
     )
 );
 
@@ -968,6 +983,41 @@ named!(pub parse_comment<&[u8], String>,
 mod tests {
     use super::*;
     use nom::IResult;
+
+    #[test]
+    fn udf() {
+        fn simple_col<T: ToString>(name: &T) -> Column {
+            Column {
+                name: name.to_string(),
+                function: None,
+                alias: None,
+                table: None,
+            }
+        }
+        let udf1 = b"func(a)";
+        let res = column_function(udf1);
+
+        assert_eq!(
+            res.unwrap().1,
+            FunctionExpression::UDF("func".to_string(), vec![simple_col(&"a")])
+        );
+
+        let udf2 = b"func(a,b)";
+        let res2 = column_function(udf2);
+
+        assert_eq!(
+            res2.unwrap().1,
+            FunctionExpression::UDF("func".to_string(), vec![simple_col(&"a"), simple_col(&"b")])
+        );
+
+        let udf3 = b"func( a , b )";
+        let res3 = column_function(udf3);
+
+        assert_eq!(
+            res3.unwrap().1,
+            FunctionExpression::UDF("func".to_string(), vec![simple_col(&"a"), simple_col(&"b")])
+        );
+    }
 
     #[test]
     fn sql_identifiers() {
