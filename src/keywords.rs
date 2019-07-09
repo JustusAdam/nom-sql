@@ -1,11 +1,13 @@
-named!(keyword_follow_char<&[u8], &[u8]>,
-       peek!(alt_complete!(tag!(" ") | tag!("\n") | tag!(";") |
+use nom::types::CompleteByteSlice;
+
+named!(keyword_follow_char<CompleteByteSlice, CompleteByteSlice>,
+       peek!(alt!(tag!(" ") | tag!("\n") | tag!(";") |
                            tag!("(") | tag!(")") | tag!("\t") |
                            tag!(",") | tag!("=") | eof!()))
 );
 
-named!(keyword_a_to_c<&[u8], &[u8]>,
-       alt_complete!(
+named!(keyword_a_to_c<CompleteByteSlice, CompleteByteSlice>,
+       alt!(
           terminated!(tag_no_case!("ABORT"), keyword_follow_char)
         | terminated!(tag_no_case!("ACTION"), keyword_follow_char)
         | terminated!(tag_no_case!("ADD"), keyword_follow_char)
@@ -39,8 +41,8 @@ named!(keyword_a_to_c<&[u8], &[u8]>,
     )
 );
 
-named!(keyword_d_to_i<&[u8], &[u8]>,
-    alt_complete!(
+named!(keyword_d_to_i<CompleteByteSlice, CompleteByteSlice>,
+    alt!(
           terminated!(tag_no_case!("DATABASE"), keyword_follow_char)
         | terminated!(tag_no_case!("DEFAULT"), keyword_follow_char)
         | terminated!(tag_no_case!("DEFERRABLE"), keyword_follow_char)
@@ -63,6 +65,7 @@ named!(keyword_d_to_i<&[u8], &[u8]>,
         | terminated!(tag_no_case!("FOREIGN"), keyword_follow_char)
         | terminated!(tag_no_case!("FROM"), keyword_follow_char)
         | terminated!(tag_no_case!("FULL"), keyword_follow_char)
+        | terminated!(tag_no_case!("FULLTEXT"), keyword_follow_char)
         | terminated!(tag_no_case!("GLOB"), keyword_follow_char)
         | terminated!(tag_no_case!("GROUP"), keyword_follow_char)
         | terminated!(tag_no_case!("HAVING"), keyword_follow_char)
@@ -83,8 +86,8 @@ named!(keyword_d_to_i<&[u8], &[u8]>,
     )
 );
 
-named!(keyword_j_to_s<&[u8], &[u8]>,
-    alt_complete!(
+named!(keyword_j_to_s<CompleteByteSlice, CompleteByteSlice>,
+    alt!(
           terminated!(tag_no_case!("ORDER"), keyword_follow_char)
         | terminated!(tag_no_case!("JOIN"), keyword_follow_char)
         | terminated!(tag_no_case!("KEY"), keyword_follow_char)
@@ -124,8 +127,8 @@ named!(keyword_j_to_s<&[u8], &[u8]>,
     )
 );
 
-named!(keyword_t_to_z<&[u8], &[u8]>,
-    alt_complete!(
+named!(keyword_t_to_z<CompleteByteSlice, CompleteByteSlice>,
+    alt!(
           terminated!(tag_no_case!("TABLE"), keyword_follow_char)
         | terminated!(tag_no_case!("TEMP"), keyword_follow_char)
         | terminated!(tag_no_case!("TEMPORARY"), keyword_follow_char)
@@ -148,20 +151,20 @@ named!(keyword_t_to_z<&[u8], &[u8]>,
     )
 );
 
-/// Matches any SQL reserved keyword
-named!(pub sql_keyword<&[u8], &[u8]>,
-    complete!(do_parse!(
-        kw: alt_complete!(
+// Matches any SQL reserved keyword
+named!(pub sql_keyword<CompleteByteSlice, CompleteByteSlice>,
+    do_parse!(
+        kw: alt!(
               keyword_a_to_c
             | keyword_d_to_i
             | keyword_j_to_s
             | keyword_t_to_z) >>
         (kw)
-    ))
+    )
 );
 
 pub fn escape_if_keyword(s: &str) -> String {
-    if sql_keyword(s.as_bytes()).is_done() {
+    if sql_keyword(CompleteByteSlice(s.as_bytes())).is_ok() {
         format!("`{}`", s)
     } else {
         s.to_owned()

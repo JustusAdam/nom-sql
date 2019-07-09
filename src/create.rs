@@ -1,12 +1,14 @@
-use nom::{alphanumeric, digit, multispace};
+use nom::{digit, multispace};
+use nom::types::CompleteByteSlice;
 use std::fmt;
 use std::str;
 use std::str::FromStr;
 
+use create_table_options::table_options;
 use column::{Column, ColumnConstraint, ColumnSpecification};
 use common::{
-    column_identifier_no_alias, integer_literal, opt_multispace, parse_comment, sql_identifier,
-    statement_terminator, string_literal, table_reference, type_identifier, Literal, Real, SqlType,
+    column_identifier_no_alias, opt_multispace, parse_comment, sql_identifier,
+    statement_terminator, table_reference, type_identifier, Literal, Real, SqlType,
     TableKey,
 };
 use compound_select::{compound_selection, CompoundSelectStatement};
@@ -92,29 +94,29 @@ impl fmt::Display for CreateViewStatement {
     }
 }
 
-/// MySQL grammar element for index column definition (§13.1.18, index_col_name)
-named!(pub index_col_name<&[u8], (Column, Option<u16>, Option<OrderType>)>,
+// MySQL grammar element for index column definition (§13.1.18, index_col_name)
+named!(pub index_col_name<CompleteByteSlice, (Column, Option<u16>, Option<OrderType>)>,
     do_parse!(
         column: column_identifier_no_alias >>
         opt_multispace >>
-        len: opt!(delimited!(tag!("("), map_res!(digit, str::from_utf8), tag!(")"))) >>
+        len: opt!(delimited!(tag!("("), digit, tag!(")"))) >>
         order: opt!(order_type) >>
-        ((column, len.map(|l| u16::from_str(l).unwrap()), order))
+        ((column, len.map(|l| u16::from_str(str::from_utf8(*l).unwrap()).unwrap()), order))
     )
 );
 
-/// Helper for list of index columns
-named!(pub index_col_list<&[u8], Vec<Column> >,
+// Helper for list of index columns
+named!(pub index_col_list<CompleteByteSlice, Vec<Column> >,
        many0!(
            do_parse!(
                entry: index_col_name >>
                opt!(
-                   complete!(do_parse!(
+                   do_parse!(
                        opt_multispace >>
                        tag!(",") >>
                        opt_multispace >>
                        ()
-                   ))
+                   )
                ) >>
                // XXX(malte): ignores length and order
                (entry.0)
@@ -122,20 +124,20 @@ named!(pub index_col_list<&[u8], Vec<Column> >,
        )
 );
 
-/// Parse rule for an individual key specification.
-named!(pub key_specification<&[u8], TableKey>,
-    alt_complete!(
+// Parse rule for an individual key specification.
+named!(pub key_specification<CompleteByteSlice, TableKey>,
+    alt!(
           do_parse!(
               tag_no_case!("fulltext") >>
               multispace >>
-              alt_complete!(tag_no_case!("key") | tag_no_case!("index")) >>
+              alt!(tag_no_case!("key") | tag_no_case!("index")) >>
               opt_multispace >>
               name: opt!(sql_identifier) >>
               opt_multispace >>
               columns: delimited!(tag!("("), delimited!(opt_multispace, index_col_list, opt_multispace), tag!(")")) >>
               (match name {
                   Some(name) => {
-                      let n = String::from(str::from_utf8(name).unwrap());
+                      let n = String::from_utf8(name.to_vec()).unwrap();
                       TableKey::FulltextKey(Some(n), columns)
                   },
                   None => TableKey::FulltextKey(None, columns),
@@ -145,18 +147,18 @@ named!(pub key_specification<&[u8], TableKey>,
               tag_no_case!("primary key") >>
               opt_multispace >>
               columns: delimited!(tag!("("), delimited!(opt_multispace, index_col_list, opt_multispace), tag!(")")) >>
-              opt!(complete!(do_parse!(
+              opt!(do_parse!(
                           multispace >>
                           tag_no_case!("autoincrement") >>
                           ()
-                   ))
+                   )
               ) >>
               (TableKey::PrimaryKey(columns))
           )
         | do_parse!(
               tag_no_case!("unique") >>
               opt!(preceded!(multispace,
-                             alt_complete!(
+                             alt!(
                                    tag_no_case!("key")
                                  | tag_no_case!("index")
                              )
@@ -168,64 +170,64 @@ named!(pub key_specification<&[u8], TableKey>,
               columns: delimited!(tag!("("), delimited!(opt_multispace, index_col_list, opt_multispace), tag!(")")) >>
               (match name {
                   Some(name) => {
-                      let n = String::from(str::from_utf8(name).unwrap());
+                      let n = String::from_utf8(name.to_vec()).unwrap();
                       TableKey::UniqueKey(Some(n), columns)
                   },
                   None => TableKey::UniqueKey(None, columns),
               })
           )
         | do_parse!(
-              alt_complete!(tag_no_case!("key") | tag_no_case!("index")) >>
+              alt!(tag_no_case!("key") | tag_no_case!("index")) >>
               opt_multispace >>
               name: sql_identifier >>
               opt_multispace >>
               columns: delimited!(tag!("("), delimited!(opt_multispace, index_col_list, opt_multispace), tag!(")")) >>
               ({
-                  let n = String::from(str::from_utf8(name).unwrap());
+                  let n = String::from_utf8(name.to_vec()).unwrap();
                   TableKey::Key(n, columns)
               })
           )
     )
 );
 
-/// Parse rule for a comma-separated list.
-named!(pub key_specification_list<&[u8], Vec<TableKey>>,
+// Parse rule for a comma-separated list.
+named!(pub key_specification_list<CompleteByteSlice, Vec<TableKey>>,
        many1!(
-           complete!(do_parse!(
+           do_parse!(
                key: key_specification >>
                opt!(
-                   complete!(do_parse!(
+                   do_parse!(
                        opt_multispace >>
                        tag!(",") >>
                        opt_multispace >>
                        ()
-                   ))
+                   )
                ) >>
                (key)
-           ))
+           )
        )
 );
 
-/// Parse rule for a comma-separated list.
-named!(pub field_specification_list<&[u8], Vec<ColumnSpecification> >,
+// Parse rule for a comma-separated list.
+named!(pub field_specification_list<CompleteByteSlice, Vec<ColumnSpecification> >,
        many1!(
-           complete!(do_parse!(
+           do_parse!(
                identifier: column_identifier_no_alias >>
-               fieldtype: opt!(complete!(do_parse!(multispace >>
+               fieldtype: opt!(do_parse!(multispace >>
                                       ti: type_identifier >>
                                       opt_multispace >>
                                       (ti)
-                               ))
+                               )
                ) >>
                constraints: many0!(column_constraint) >>
                comment: opt!(parse_comment) >>
                opt!(
-                   complete!(do_parse!(
+                   do_parse!(
                        opt_multispace >>
                        tag!(",") >>
                        opt_multispace >>
                        ()
-                   ))
+                   )
                ) >>
                ({
                    let t = match fieldtype {
@@ -239,13 +241,13 @@ named!(pub field_specification_list<&[u8], Vec<ColumnSpecification> >,
                        comment: comment,
                    }
                })
-           ))
+           )
        )
 );
 
-/// Parse rule for a column definition contraint.
-named!(pub column_constraint<&[u8], Option<ColumnConstraint>>,
-    alt_complete!(
+// Parse rule for a column definition contraint.
+named!(pub column_constraint<CompleteByteSlice, Option<ColumnConstraint>>,
+    alt!(
           do_parse!(
               opt_multispace >>
               tag_no_case!("not null") >>
@@ -268,20 +270,20 @@ named!(pub column_constraint<&[u8], Option<ColumnConstraint>>,
               opt_multispace >>
               tag_no_case!("default") >>
               multispace >>
-              def: alt_complete!(
+              def: alt!(
                     do_parse!(s: delimited!(tag!("'"), take_until!("'"), tag!("'")) >> (
-                        Literal::String(String::from(str::from_utf8(s).unwrap()))
+                        Literal::String(String::from_utf8(s.to_vec()).unwrap())
                     ))
-                  | do_parse!(i: map_res!(digit, str::from_utf8) >>
+                  | do_parse!(i: digit >>
                               tag!(".") >>
-                              f: map_res!(digit, str::from_utf8) >> (
+                              f: digit >> (
                               Literal::FixedPoint(Real {
-                                  integral: i32::from_str(i).unwrap(),
-                                  fractional: i32::from_str(f).unwrap()
+                                  integral: i32::from_str(str::from_utf8(*i).unwrap()).unwrap(),
+                                  fractional: i32::from_str(str::from_utf8(*f).unwrap()).unwrap()
                               })
                     ))
-                  | do_parse!(d: map_res!(digit, str::from_utf8) >> (
-                        Literal::Integer(i64::from_str(d).unwrap())
+                  | do_parse!(d: digit >> (
+                        Literal::Integer(i64::from_str(str::from_utf8(*d).unwrap()).unwrap())
                     ))
                   | do_parse!(tag!("''") >> (Literal::String(String::from(""))))
                   | do_parse!(tag_no_case!("null") >> (Literal::Null))
@@ -306,23 +308,23 @@ named!(pub column_constraint<&[u8], Option<ColumnConstraint>>,
               opt_multispace >>
               tag_no_case!("character set") >>
               multispace >>
-              charset: map_res!(sql_identifier, str::from_utf8) >>
-              (Some(ColumnConstraint::CharacterSet(charset.to_owned())))
+              charset: sql_identifier >>
+              (Some(ColumnConstraint::CharacterSet(str::from_utf8(*charset).unwrap().to_owned())))
           )
         | do_parse!(
               opt_multispace >>
               tag_no_case!("collate") >>
               multispace >>
-              collation: map_res!(sql_identifier, str::from_utf8) >>
-              (Some(ColumnConstraint::Collation(collation.to_owned())))
+              collation: sql_identifier >>
+              (Some(ColumnConstraint::Collation(str::from_utf8(*collation).unwrap().to_owned())))
           )
     )
 );
 
-/// Parse rule for a SQL CREATE TABLE query.
-/// TODO(malte): support types, TEMPORARY tables, IF NOT EXISTS, AS stmt
-named!(pub creation<&[u8], CreateTableStatement>,
-    complete!(do_parse!(
+// Parse rule for a SQL CREATE TABLE query.
+// TODO(malte): support types, TEMPORARY tables, IF NOT EXISTS, AS stmt
+named!(pub creation<CompleteByteSlice, CreateTableStatement>,
+    do_parse!(
         tag_no_case!("create") >>
         multispace >>
         tag_no_case!("table") >>
@@ -337,131 +339,7 @@ named!(pub creation<&[u8], CreateTableStatement>,
         opt_multispace >>
         tag!(")") >>
         opt_multispace >>
-        // XXX(malte): wrap the two below in a permutation! rule that permits arbitrary ordering
-        opt!(
-            complete!(
-                do_parse!(
-                    tag_no_case!("type") >>
-                    opt_multispace >>
-                    tag!("=") >>
-                    opt_multispace >>
-                    alphanumeric >>
-                    ()
-                )
-            )
-        ) >>
-        opt_multispace >>
-        opt!(
-            complete!(
-                do_parse!(
-                    tag_no_case!("pack_keys") >>
-                    opt_multispace >>
-                    tag!("=") >>
-                    opt_multispace >>
-                    alt_complete!(tag!("0") | tag!("1")) >>
-                    ()
-                )
-            )
-        ) >>
-        opt_multispace >>
-        opt!(
-            complete!(
-                do_parse!(
-                    tag_no_case!("engine") >>
-                    opt_multispace >>
-                    tag!("=") >>
-                    opt_multispace >>
-                    opt!(alphanumeric) >>
-                    opt!(tag!(",")) >>
-                    ()
-                )
-            )
-        ) >>
-        opt_multispace >>
-        opt!(
-            complete!(
-                do_parse!(
-                    tag_no_case!("auto_increment") >>
-                    opt_multispace >>
-                    tag!("=") >>
-                    opt_multispace >>
-                    integer_literal >>
-                    ()
-                )
-            )
-        ) >>
-        opt_multispace >>
-        opt!(
-            complete!(
-                do_parse!(
-                    tag_no_case!("default charset") >>
-                    opt_multispace >>
-                    tag!("=") >>
-                    opt_multispace >>
-                    alt_complete!(
-                        tag!("utf8mb4") |
-                        tag!("utf8") |
-                        tag!("binary") |
-                        tag!("big5") |
-                        tag!("ucs2") |
-                        tag!("latin1")
-                        ) >>
-                    ()
-                )
-            )
-        ) >>
-        opt_multispace >>
-        opt!(
-            complete!(
-                do_parse!(
-                    tag_no_case!("collate") >>
-                    opt_multispace >>
-                    tag!("=") >>
-                    opt_multispace >>
-                    // TODO(malte): imprecise hack, should not accept everything
-                    sql_identifier >>
-                    ()
-                )
-            )
-        ) >>
-        opt_multispace >>
-        opt!(
-            complete!(
-                do_parse!(
-                    tag_no_case!("comment") >>
-                    opt_multispace >>
-                    tag!("=") >>
-                    opt_multispace >>
-                    string_literal >>
-                    ()
-                )
-            )
-        ) >>
-        opt!(
-            complete!(
-                do_parse!(
-                    tag_no_case!("max_rows") >>
-                    opt_multispace >>
-                    opt!(tag!("=")) >>
-                    opt_multispace >>
-                    integer_literal >>
-                    ()
-                )
-            )
-        ) >>
-        opt_multispace >>
-        opt!(
-            complete!(
-                do_parse!(
-                    tag_no_case!("avg_row_length") >>
-                    opt_multispace >>
-                    opt!(tag!("=")) >>
-                    opt_multispace >>
-                    integer_literal >>
-                    ()
-                )
-            )
-        ) >>
+        table_options >>
         statement_terminator >>
         ({
             // "table AS alias" isn't legal in CREATE statements
@@ -519,12 +397,12 @@ named!(pub creation<&[u8], CreateTableStatement>,
                 keys: named_keys,
             }
         })
-    ))
+    )
 );
 
-/// Parse rule for a SQL CREATE VIEW query.
-named!(pub view_creation<&[u8], CreateViewStatement>,
-    complete!(do_parse!(
+// Parse rule for a SQL CREATE VIEW query.
+named!(pub view_creation<CompleteByteSlice, CreateViewStatement>,
+    do_parse!(
         tag_no_case!("create") >>
         multispace >>
         tag_no_case!("view") >>
@@ -533,19 +411,19 @@ named!(pub view_creation<&[u8], CreateViewStatement>,
         multispace >>
         tag_no_case!("as") >>
         multispace >>
-        definition: alt_complete!(
+        definition: alt!(
               map!(compound_selection, |s| SelectSpecification::Compound(s))
             | map!(nested_selection, |s| SelectSpecification::Simple(s))
         ) >>
         statement_terminator >>
         ({
             CreateViewStatement {
-                name: String::from(str::from_utf8(name).unwrap()),
+                name: String::from_utf8(name.to_vec()).unwrap(),
                 fields: vec![],  // TODO(malte): support
                 definition: Box::new(definition),
             }
         })
-    ))
+    )
 );
 
 #[cfg(test)]
@@ -559,9 +437,9 @@ mod tests {
         let type0 = "bigint(20) unsigned";
         let type1 = "varchar(255) binary";
 
-        let res = type_identifier(type0.as_bytes());
+        let res = type_identifier(CompleteByteSlice(type0.as_bytes()));
         assert_eq!(res.unwrap().1, SqlType::Bigint(20));
-        let res = type_identifier(type1.as_bytes());
+        let res = type_identifier(CompleteByteSlice(type1.as_bytes()));
         assert_eq!(res.unwrap().1, SqlType::Varchar(255));
     }
 
@@ -571,7 +449,7 @@ mod tests {
         // because it is never validly the end of a query
         let qstring = "id bigint(20), name varchar(255),";
 
-        let res = field_specification_list(qstring.as_bytes());
+        let res = field_specification_list(CompleteByteSlice(qstring.as_bytes()));
         assert_eq!(
             res.unwrap().1,
             vec![
@@ -585,7 +463,7 @@ mod tests {
     fn simple_create() {
         let qstring = "CREATE TABLE users (id bigint(20), name varchar(255), email varchar(255));";
 
-        let res = creation(qstring.as_bytes());
+        let res = creation(CompleteByteSlice(qstring.as_bytes()));
         assert_eq!(
             res.unwrap().1,
             CreateTableStatement {
@@ -603,7 +481,7 @@ mod tests {
     #[test]
     fn create_without_space_after_tablename() {
         let qstring = "CREATE TABLE t(x integer);";
-        let res = creation(qstring.as_bytes());
+        let res = creation(CompleteByteSlice(qstring.as_bytes()));
         assert_eq!(
             res.unwrap().1,
             CreateTableStatement {
@@ -620,7 +498,7 @@ mod tests {
     fn mediawiki_create() {
         let qstring = "CREATE TABLE user_newtalk (  user_id int(5) NOT NULL default '0',  user_ip \
                        varchar(40) NOT NULL default '') TYPE=MyISAM;";
-        let res = creation(qstring.as_bytes());
+        let res = creation(CompleteByteSlice(qstring.as_bytes()));
         assert_eq!(
             res.unwrap().1,
             CreateTableStatement {
@@ -667,7 +545,7 @@ mod tests {
                         user_editcount int,
                         user_password_expires varbinary(14) DEFAULT NULL
                        ) ENGINE=, DEFAULT CHARSET=utf8";
-        creation(qstring.as_bytes()).unwrap();
+        creation(CompleteByteSlice(qstring.as_bytes())).unwrap();
     }
 
     #[test]
@@ -680,7 +558,7 @@ mod tests {
  iw_local bool NOT NULL,
  iw_trans tinyint NOT NULL default 0
  ) ENGINE=, DEFAULT CHARSET=utf8";
-        creation(qstring.as_bytes()).unwrap();
+        creation(CompleteByteSlice(qstring.as_bytes())).unwrap();
     }
 
     #[test]
@@ -699,8 +577,8 @@ mod tests {
           KEY `el_backlinks_to` (`el_from_namespace`,`el_to`(60),`el_from`),
           KEY `el_index_60` (`el_index_60`,`el_id`),
           KEY `el_from_index_60` (`el_from`,`el_index_60`,`el_id`)
-        ) ENGINE=InnoDB AUTO_INCREMENT=413856661 DEFAULT CHARSET=binary;";
-        creation(qstring.as_bytes()).unwrap();
+        )";
+        creation(CompleteByteSlice(qstring.as_bytes())).unwrap();
     }
 
     #[test]
@@ -709,7 +587,7 @@ mod tests {
         let qstring = "CREATE TABLE users (id bigint(20), name varchar(255), email varchar(255), \
                        PRIMARY KEY (id));";
 
-        let res = creation(qstring.as_bytes());
+        let res = creation(CompleteByteSlice(qstring.as_bytes()));
         assert_eq!(
             res.unwrap().1,
             CreateTableStatement {
@@ -728,7 +606,7 @@ mod tests {
         let qstring = "CREATE TABLE users (id bigint(20), name varchar(255), email varchar(255), \
                        UNIQUE KEY id_k (id));";
 
-        let res = creation(qstring.as_bytes());
+        let res = creation(CompleteByteSlice(qstring.as_bytes()));
         assert_eq!(
             res.unwrap().1,
             CreateTableStatement {
@@ -758,7 +636,7 @@ mod tests {
                        `object_repr` varchar(200) NOT NULL,
                        `action_flag` smallint UNSIGNED NOT NULL,
                        `change_message` longtext NOT NULL);";
-        let res = creation(qstring.as_bytes());
+        let res = creation(CompleteByteSlice(qstring.as_bytes()));
         assert_eq!(
             res.unwrap().1,
             CreateTableStatement {
@@ -775,7 +653,7 @@ mod tests {
                     ),
                     ColumnSpecification::with_constraints(
                         Column::from("django_admin_log.action_time"),
-                        SqlType::DateTime,
+                        SqlType::DateTime(0),
                         vec![ColumnConstraint::NotNull],
                     ),
                     ColumnSpecification::with_constraints(
@@ -814,7 +692,7 @@ mod tests {
         let qstring = "CREATE TABLE `auth_group` (
                        `id` integer AUTO_INCREMENT NOT NULL PRIMARY KEY,
                        `name` varchar(80) NOT NULL UNIQUE)";
-        let res = creation(qstring.as_bytes());
+        let res = creation(CompleteByteSlice(qstring.as_bytes()));
         assert_eq!(
             res.unwrap().1,
             CreateTableStatement {
@@ -849,7 +727,7 @@ mod tests {
         let expected = "CREATE TABLE auth_group (\
                         id INT(32) AUTO_INCREMENT NOT NULL PRIMARY KEY, \
                         name VARCHAR(80) NOT NULL UNIQUE)";
-        let res = creation(qstring.as_bytes());
+        let res = creation(CompleteByteSlice(qstring.as_bytes()));
         assert_eq!(format!("{}", res.unwrap().1), expected);
     }
 
@@ -860,7 +738,7 @@ mod tests {
 
         let qstring = "CREATE VIEW v AS SELECT * FROM users WHERE username = \"bob\";";
 
-        let res = view_creation(qstring.as_bytes());
+        let res = view_creation(CompleteByteSlice(qstring.as_bytes()));
         assert_eq!(
             res.unwrap().1,
             CreateViewStatement {
@@ -891,7 +769,7 @@ mod tests {
 
         let qstring = "CREATE VIEW v AS SELECT * FROM users UNION SELECT * FROM old_users;";
 
-        let res = view_creation(qstring.as_bytes());
+        let res = view_creation(CompleteByteSlice(qstring.as_bytes()));
         assert_eq!(
             res.unwrap().1,
             CreateViewStatement {
@@ -927,7 +805,66 @@ mod tests {
     fn format_create_view() {
         let qstring = "CREATE VIEW `v` AS SELECT * FROM `t`;";
         let expected = "CREATE VIEW v AS SELECT * FROM t";
-        let res = view_creation(qstring.as_bytes());
+        let res = view_creation(CompleteByteSlice(qstring.as_bytes()));
         assert_eq!(format!("{}", res.unwrap().1), expected);
+    }
+
+    #[test]
+    fn lobsters_indexes() {
+        let qstring = "CREATE TABLE `comments` (
+            `id` int unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            `hat_id` int,
+            fulltext INDEX `index_comments_on_comment`  (`comment`),
+            INDEX `confidence_idx`  (`confidence`),
+            UNIQUE INDEX `short_id`  (`short_id`),
+            INDEX `story_id_short_id`  (`story_id`, `short_id`),
+            INDEX `thread_id`  (`thread_id`),
+            INDEX `index_comments_on_user_id`  (`user_id`))
+            ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+        let res = creation(CompleteByteSlice(qstring.as_bytes()));
+        assert_eq!(
+            res.unwrap().1,
+            CreateTableStatement {
+                table: Table::from("comments"),
+                fields: vec![
+                    ColumnSpecification::with_constraints(
+                        Column::from("comments.id"),
+                        SqlType::Int(32),
+                        vec![
+                            ColumnConstraint::NotNull,
+                            ColumnConstraint::AutoIncrement,
+                            ColumnConstraint::PrimaryKey,
+                        ],
+                    ),
+                    ColumnSpecification::new(Column::from("comments.hat_id"), SqlType::Int(32),),
+                ],
+                keys: Some(vec![
+                    TableKey::FulltextKey(
+                        Some("index_comments_on_comment".into()),
+                        vec![Column::from("comments.comment")]
+                    ),
+                    TableKey::Key(
+                        "confidence_idx".into(),
+                        vec![Column::from("comments.confidence")]
+                    ),
+                    TableKey::UniqueKey(
+                        Some("short_id".into()),
+                        vec![Column::from("comments.short_id")]
+                    ),
+                    TableKey::Key(
+                        "story_id_short_id".into(),
+                        vec![
+                            Column::from("comments.story_id"),
+                            Column::from("comments.short_id")
+                        ]
+                    ),
+                    TableKey::Key("thread_id".into(), vec![Column::from("comments.thread_id")]),
+                    TableKey::Key(
+                        "index_comments_on_user_id".into(),
+                        vec![Column::from("comments.user_id")]
+                    ),
+                ]),
+            }
+        );
     }
 }

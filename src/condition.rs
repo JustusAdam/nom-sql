@@ -1,8 +1,10 @@
 use nom::multispace;
+use nom::types::CompleteByteSlice;
 use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::str;
 
+use arithmetic::{arithmetic_expression, ArithmeticExpression};
 use column::Column;
 use common::{
     binary_comparison_operator, column_identifier, literal, opt_multispace, value_list, Literal,
@@ -85,6 +87,7 @@ pub enum ConditionExpression {
     LogicalOp(ConditionTree),
     NegationOp(Box<ConditionExpression>),
     Base(ConditionBase),
+    Arithmetic(Box<ArithmeticExpression>),
     Bracketed(Box<ConditionExpression>),
 }
 
@@ -96,13 +99,14 @@ impl fmt::Display for ConditionExpression {
             ConditionExpression::NegationOp(ref expr) => write!(f, "NOT {}", expr),
             ConditionExpression::Bracketed(ref expr) => write!(f, "({})", expr),
             ConditionExpression::Base(ref base) => write!(f, "{}", base),
+            ConditionExpression::Arithmetic(ref expr) => write!(f, "{}", expr),
         }
     }
 }
 
-/// Parse a conditional expression into a condition tree structure
-named!(pub condition_expr<&[u8], ConditionExpression>,
-       alt_complete!(
+// Parse a conditional expression into a condition tree structure
+named!(pub condition_expr<CompleteByteSlice, ConditionExpression>,
+       alt!(
            do_parse!(
                left: and_expr >>
                opt_multispace >>
@@ -120,8 +124,8 @@ named!(pub condition_expr<&[u8], ConditionExpression>,
        |   and_expr)
 );
 
-named!(pub and_expr<&[u8], ConditionExpression>,
-       alt_complete!(
+named!(pub and_expr<CompleteByteSlice, ConditionExpression>,
+       alt!(
            do_parse!(
                left: parenthetical_expr >>
                opt_multispace >>
@@ -139,9 +143,29 @@ named!(pub and_expr<&[u8], ConditionExpression>,
        |   parenthetical_expr)
 );
 
-named!(pub parenthetical_expr<&[u8], ConditionExpression>,
-       alt_complete!(
-           map!(
+named!(pub parenthetical_expr<CompleteByteSlice, ConditionExpression>,
+       alt!(
+           do_parse!(
+                tag!("(") >>
+                opt_multispace >>
+                left: simple_expr >>
+                opt_multispace >>
+                tag!(")") >>
+                opt_multispace >>
+                op: binary_comparison_operator >>
+                opt_multispace >>
+                right: simple_expr >>
+                (ConditionExpression::ComparisonOp(
+                    ConditionTree {
+                        operator: op,
+                        left: Box::new(
+                            ConditionExpression::Bracketed(Box::new(left))
+                        ),
+                        right: Box::new(right)
+                    })
+                )
+            )
+        |    map!(
                delimited!(
                    do_parse!(tag!("(") >> opt_multispace >> ()),
                    condition_expr,
@@ -152,8 +176,8 @@ named!(pub parenthetical_expr<&[u8], ConditionExpression>,
        |   not_expr)
 );
 
-named!(pub not_expr<&[u8], ConditionExpression>,
-       alt_complete!(
+named!(pub not_expr<CompleteByteSlice, ConditionExpression>,
+       alt!(
            do_parse!(
                tag_no_case!("not") >>
                multispace >>
@@ -163,12 +187,12 @@ named!(pub not_expr<&[u8], ConditionExpression>,
        |   boolean_primary)
 );
 
-named!(boolean_primary<&[u8], ConditionExpression>,
-    alt_complete!(
+named!(boolean_primary<CompleteByteSlice, ConditionExpression>,
+    alt!(
         do_parse!(
             left: predicate >>
             opt_multispace >>
-            rest: alt_complete!(
+            rest: alt!(
                 do_parse!(tag_no_case!("is") >>
                           opt_multispace >>
                           not: opt!(tag_no_case!("not")) >>
@@ -206,18 +230,27 @@ named!(boolean_primary<&[u8], ConditionExpression>,
     )
 );
 
-named!(predicate<&[u8], ConditionExpression>,
+named!(predicate<CompleteByteSlice, ConditionExpression>,
     do_parse!(
         left: simple_expr >>
         op_right: opt!(
-            alt_complete!(
+            alt!(
                   do_parse!(
                       neg: opt!(preceded!(opt_multispace, tag_no_case!("not"))) >>
                       multispace >>
                       tag_no_case!("in") >>
                       multispace >>
                       sq: nested_selection >>
-                      (ConditionExpression::Base(ConditionBase::NestedSelect(Box::new(sq))))
+                      ({
+                          let nested = ConditionExpression::Base(
+                              ConditionBase::NestedSelect(Box::new(sq))
+                          );
+                          if neg.is_some() {
+                              ConditionExpression::NegationOp(Box::new(nested))
+                          } else {
+                              nested
+                          }
+                      })
                   )
                 | do_parse!(
                       neg: opt!(preceded!(opt_multispace, tag_no_case!("not"))) >>
@@ -225,7 +258,14 @@ named!(predicate<&[u8], ConditionExpression>,
                       tag_no_case!("in") >>
                       multispace >>
                       vl: delimited!(tag!("("), value_list, tag!(")")) >>
-                      (ConditionExpression::Base(ConditionBase::LiteralList(vl)))
+                      ({
+                          let list = ConditionExpression::Base(ConditionBase::LiteralList(vl));
+                          if neg.is_some() {
+                              ConditionExpression::NegationOp(Box::new(list))
+                          } else {
+                              list
+                          }
+                      })
                   )
             )
         ) >>
@@ -241,9 +281,23 @@ named!(predicate<&[u8], ConditionExpression>,
     )
 );
 
-named!(simple_expr<&[u8], ConditionExpression>,
-    alt_complete!(
+named!(simple_expr<CompleteByteSlice, ConditionExpression>,
+    alt!(
             do_parse!(
+                arit_expr: arithmetic_expression >>
+                (ConditionExpression::Arithmetic(Box::new(arit_expr)))
+            )
+        |   do_parse!(
+                tag!("(") >>
+                opt_multispace >>
+                arit_expr: arithmetic_expression >>
+                opt_multispace >>
+                tag!(")") >>
+                (ConditionExpression::Bracketed(Box::new(
+                    ConditionExpression::Arithmetic(Box::new(arit_expr))
+                )))
+            )
+        |    do_parse!(
                 lit: literal >>
                 (ConditionExpression::Base(ConditionBase::Literal(lit)))
             )
@@ -267,6 +321,7 @@ mod tests {
     use super::*;
     use column::Column;
     use common::{FieldDefinitionExpression, Literal, Operator};
+    use arithmetic::{ArithmeticBase, ArithmeticOperator};
 
     fn columns(cols: &[&str]) -> Vec<FieldDefinitionExpression> {
         cols.iter()
@@ -292,7 +347,7 @@ mod tests {
 
         let cond = "a.foo = ? and b.bar = 42";
 
-        let res = condition_expr(cond.as_bytes());
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
         let c1 = Column::from("a.foo");
         let c2 = Column::from("b.bar");
         let mut expected_cols = HashSet::new();
@@ -310,7 +365,7 @@ mod tests {
     fn equality_placeholder() {
         let cond = "foo = ?";
 
-        let res = condition_expr(cond.as_bytes());
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
         assert_eq!(
             res.unwrap().1,
             flat_condition_tree(
@@ -321,12 +376,145 @@ mod tests {
         );
     }
 
+    fn x_operator_value(op: ArithmeticOperator, value: Literal) -> ConditionExpression {
+        ConditionExpression::Arithmetic(
+            Box::new(ArithmeticExpression::new(
+                op,
+                ArithmeticBase::Column(Column::from("x")),
+                ArithmeticBase::Scalar(value),
+                None
+                )
+            )
+        )
+    }
+    #[test]
+    fn simple_arithmetic_expression() {
+        let cond = "x + 3";
+
+        let res = simple_expr(CompleteByteSlice(cond.as_bytes()));
+        assert_eq!(
+            res.unwrap().1,
+            x_operator_value(ArithmeticOperator::Add, 3.into())
+        );
+    }
+
+    #[test]
+    fn simple_arithmetic_expression_with_parenthesis() {
+        let cond = "( x - 2 )";
+
+        let res = simple_expr(CompleteByteSlice(cond.as_bytes()));
+        assert_eq!(
+            res.unwrap().1,
+            ConditionExpression::Bracketed(Box::new(
+                x_operator_value(ArithmeticOperator::Subtract, 2.into())
+            ))
+        );
+    }
+
+    #[test]
+    fn parenthetical_arithmetic_expression() {
+        let cond = "( x * 5 )";
+
+        let res = parenthetical_expr(CompleteByteSlice(cond.as_bytes()));
+        assert_eq!(
+            res.unwrap().1,
+            ConditionExpression::Bracketed(Box::new(
+                x_operator_value(ArithmeticOperator::Multiply, 5.into())
+            ))
+        );
+    }
+
+    #[test]
+    fn condition_expression_with_arithmetics() {
+        let cond = "x * 3 = 21";
+
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
+        assert_eq!(
+            res.unwrap().1,
+            ConditionExpression::ComparisonOp(ConditionTree {
+                operator: Operator::Equal,
+                left: Box::new(
+                    x_operator_value(ArithmeticOperator::Multiply, 3.into())
+                ),
+                right: Box::new(
+                    ConditionExpression::Base(ConditionBase::Literal(21.into()))
+                )
+            })
+        );
+    }
+    #[test]
+    fn condition_expression_with_arithmetics_and_parenthesis() {
+        let cond = "(x - 7 = 15)";
+
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
+        assert_eq!(
+            res.unwrap().1,
+            ConditionExpression::Bracketed(Box::new(
+                ConditionExpression::ComparisonOp(ConditionTree {
+                    operator: Operator::Equal,
+                    left: Box::new(
+                        x_operator_value(ArithmeticOperator::Subtract, 7.into())
+                    ),
+                    right: Box::new(
+                        ConditionExpression::Base(ConditionBase::Literal(15.into()))
+                    )
+                })
+            ))
+        );
+    }
+
+    #[test]
+    fn condition_expression_with_arithmetics_in_parenthesis() {
+        let cond = "( x + 2) = 15";
+
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
+        assert_eq!(
+            res.unwrap().1,
+            ConditionExpression::ComparisonOp(ConditionTree {
+                operator: Operator::Equal,
+                left: Box::new(
+                    ConditionExpression::Bracketed(Box::new(
+                        x_operator_value(ArithmeticOperator::Add, 2.into())
+                    ))
+                ),
+                right: Box::new(
+                    ConditionExpression::Base(ConditionBase::Literal(15.into()))
+                )
+            })
+        );
+    }
+
+    #[test]
+    fn condition_expression_with_arithmetics_in_parenthesis_in_both_side() {
+        let cond = "( x + 2) =(x*3)";
+
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
+        assert_eq!(
+            res.unwrap().1,
+            ConditionExpression::ComparisonOp(ConditionTree {
+                operator: Operator::Equal,
+                left: Box::new(
+                    ConditionExpression::Bracketed(Box::new(
+                        x_operator_value(ArithmeticOperator::Add, 2.into())
+                    ))
+                ),
+                right: Box::new(
+                    ConditionExpression::Bracketed(Box::new(
+                        x_operator_value(ArithmeticOperator::Multiply, 3.into())
+                    ))
+                )
+            })
+        );
+    }
+
+
+
     #[test]
     fn equality_literals() {
         let cond1 = "foo = 42";
         let cond2 = "foo = \"hello\"";
 
-        let res1 = condition_expr(cond1.as_bytes());
+        let res1 = condition_expr(CompleteByteSlice(cond1.as_bytes()));
         assert_eq!(
             res1.unwrap().1,
             flat_condition_tree(
@@ -336,7 +524,7 @@ mod tests {
             )
         );
 
-        let res2 = condition_expr(cond2.as_bytes());
+        let res2 = condition_expr(CompleteByteSlice(cond2.as_bytes()));
         assert_eq!(
             res2.unwrap().1,
             flat_condition_tree(
@@ -352,7 +540,7 @@ mod tests {
         let cond1 = "foo >= 42";
         let cond2 = "foo <= 5";
 
-        let res1 = condition_expr(cond1.as_bytes());
+        let res1 = condition_expr(CompleteByteSlice(cond1.as_bytes()));
         assert_eq!(
             res1.unwrap().1,
             flat_condition_tree(
@@ -362,7 +550,7 @@ mod tests {
             )
         );
 
-        let res2 = condition_expr(cond2.as_bytes());
+        let res2 = condition_expr(CompleteByteSlice(cond2.as_bytes()));
         assert_eq!(
             res2.unwrap().1,
             flat_condition_tree(
@@ -377,7 +565,7 @@ mod tests {
     fn empty_string_literal() {
         let cond = "foo = ''";
 
-        let res = condition_expr(cond.as_bytes());
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
         assert_eq!(
             res.unwrap().1,
             flat_condition_tree(
@@ -426,7 +614,7 @@ mod tests {
             right: Box::new(right),
         });
 
-        let res = condition_expr(cond.as_bytes());
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
         assert_eq!(res.unwrap().1, complete);
     }
 
@@ -468,7 +656,7 @@ mod tests {
             right: Box::new(right),
         });
 
-        let res = condition_expr(cond.as_bytes());
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
         assert_eq!(res.unwrap().1, complete);
     }
 
@@ -498,7 +686,7 @@ mod tests {
             right: Box::new(right),
         });
 
-        let res = condition_expr(cond.as_bytes());
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
         assert_eq!(res.unwrap().1, complete);
     }
 
@@ -511,7 +699,7 @@ mod tests {
 
         let cond = "bar in (select col from foo)";
 
-        let res = condition_expr(cond.as_bytes());
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
 
         let nested_select = Box::new(SelectStatement {
             tables: vec![Table::from("foo")],
@@ -537,7 +725,7 @@ mod tests {
 
         let cond = "paperId in (select paperId from PaperConflict) and size > 0";
 
-        let res = condition_expr(cond.as_bytes());
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
 
         let nested_select = Box::new(SelectStatement {
             tables: vec![Table::from("PaperConflict")],
@@ -568,7 +756,7 @@ mod tests {
 
         let cond = "bar in (0)";
 
-        let res = condition_expr(cond.as_bytes());
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
 
         let expected = flat_condition_tree(
             Operator::In,
@@ -586,14 +774,14 @@ mod tests {
 
         let cond = "bar IS NULL";
 
-        let res = condition_expr(cond.as_bytes());
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
         let expected =
             flat_condition_tree(Operator::Equal, Field("bar".into()), Literal(Literal::Null));
         assert_eq!(res.unwrap().1, expected);
 
         let cond = "bar IS NOT NULL";
 
-        let res = condition_expr(cond.as_bytes());
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
         let expected = flat_condition_tree(
             Operator::NotEqual,
             Field("bar".into()),
@@ -617,7 +805,7 @@ mod tests {
                     OR `saldo` >= 0 ) \
                     AND `read_ribbons`.`user_id` = ?";
 
-        let res = condition_expr(cond.as_bytes());
+        let res = condition_expr(CompleteByteSlice(cond.as_bytes()));
         let expected = ConditionExpression::LogicalOp(ConditionTree {
             operator: Operator::And,
             left: Box::new(flat_condition_tree(

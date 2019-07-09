@@ -1,4 +1,4 @@
-use nom::IResult;
+use nom::types::CompleteByteSlice;
 use std::fmt;
 use std::str;
 
@@ -40,8 +40,8 @@ impl fmt::Display for SqlQuery {
     }
 }
 
-named!(pub sql_query<&[u8], SqlQuery>,
-    alt_complete!(
+named!(pub sql_query<CompleteByteSlice, SqlQuery>,
+    alt!(
           do_parse!(c: creation >> (SqlQuery::CreateTable(c)))
         | do_parse!(i: insertion >> (SqlQuery::Insert(i)))
         | do_parse!(c: compound_selection >> (SqlQuery::CompoundSelect(c)))
@@ -54,14 +54,17 @@ named!(pub sql_query<&[u8], SqlQuery>,
     )
 );
 
-pub fn parse_query(input: &str) -> Result<SqlQuery, &str> {
-    let q_bytes = String::from(input.trim()).into_bytes();
-
-    match sql_query(&q_bytes) {
-        IResult::Done(_, o) => Ok(o),
-        IResult::Error(_) => Err("failed to parse query"),
-        IResult::Incomplete(_) => unreachable!(),
+pub fn parse_query_bytes<T>(input: T) -> Result<SqlQuery, &'static str>
+    where T: AsRef<[u8]> {
+    match sql_query(CompleteByteSlice(input.as_ref())) {
+        Ok((_, o)) => Ok(o),
+        Err(_) => Err("failed to parse query"),
     }
+}
+
+pub fn parse_query<T>(input: T) -> Result<SqlQuery, &'static str>
+    where T: AsRef<str> {
+    parse_query_bytes(input.as_ref().trim().as_bytes())
 }
 
 #[cfg(test)]
@@ -95,6 +98,20 @@ mod tests {
     fn trim_query() {
         let qstring = "   INSERT INTO users VALUES (42, \"test\");     ";
         let res = parse_query(qstring);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn parse_byte_slice() {
+        let qstring: &[u8] = b"INSERT INTO users VALUES (42, \"test\");";
+        let res = parse_query_bytes(qstring);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn parse_byte_vector() {
+        let qstring: Vec<u8> = b"INSERT INTO users VALUES (42, \"test\");".to_vec();
+        let res = parse_query_bytes(&qstring);
         assert!(res.is_ok());
     }
 
